@@ -34,6 +34,14 @@ Las imágenes salen de la aplicación en ejecución.
 
 ![Formatos, calidad y etiquetas de la vista actual](docs/screenshots/06-estadisticas.png)
 
+### Carga en el área de trabajo
+
+![Overlay de indexado sobre la galería](docs/screenshots/07-carga.png)
+
+### Sidebar colapsable
+
+![Secciones del panel izquierdo plegadas](docs/screenshots/08-sidebar.png)
+
 ## Requisitos
 
 - Windows

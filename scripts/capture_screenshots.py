@@ -150,6 +150,10 @@ def main() -> None:
     save_widget(window, "01-inicio.png")
 
     window.load_folder(library)
+    QApplication.processEvents()
+    QTest.qWait(200)
+    if window.busy_overlay.isVisible():
+        save_widget(window, "07-carga.png")
     wait_idle(window)
     for filename in ("atardecer.jpg", "oceano.png", "bosque.webp", "faro.jpg"):
         add_tag(window, filename, "paisaje")
@@ -164,6 +168,17 @@ def main() -> None:
     assert playa.id is not None
     window.gallery._on_clicked(playa.id)
     save_widget(window, "02-biblioteca.png")
+
+    window._sidebar_sections["filters"].set_expanded(False)
+    window._sidebar_sections["duplicates"].set_expanded(False)
+    window._sidebar_sections["stats"].set_expanded(False)
+    QApplication.processEvents()
+    save_widget(window, "08-sidebar.png")
+    window._sidebar_sections["filters"].set_expanded(True)
+    window._sidebar_sections["duplicates"].set_expanded(True)
+    window._sidebar_sections["stats"].set_expanded(True)
+    QApplication.processEvents()
+
     sidebar = window.findChild(QScrollArea, "SidebarScroll")
     if sidebar is not None:
         sidebar.verticalScrollBar().setValue(sidebar.verticalScrollBar().maximum())

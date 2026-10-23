@@ -33,6 +33,8 @@ from tagflow.core.duplicates import group_by_exact, group_by_name, group_by_phas
 from tagflow.core.errors import UserError
 from tagflow.core.models import DuplicateGroup, ImageRecord, LibraryStats
 from tagflow.core.scanner import extract_metadata, refresh_thumbnail
+from tagflow.ui.components.busy_overlay import BusyOverlay
+from tagflow.ui.components.collapsible import CollapsibleSection
 from tagflow.ui.components.dialogs import DuplicateDialog, ErrorDialog
 from tagflow.ui.components.filter_bar import FilterBar
 from tagflow.ui.components.gallery import Gallery
@@ -77,6 +79,18 @@ class _Mark(QWidget):
         painter.drawEllipse(5, 5, 28, 28)
 
 
+class _WorkHost(QWidget):
+    """Contenedor del centro: mantiene el overlay encima del área de trabajo."""
+
+    overlay: BusyOverlay | None = None
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        if self.overlay is not None:
+            self.overlay.setGeometry(self.rect())
+            self.overlay.raise_()
+
+
 class MainWindow(QMainWindow):
     """Organiza una carpeta local: índice, filtros, etiquetas y duplicados."""
 
@@ -97,6 +111,8 @@ class MainWindow(QMainWindow):
         self._refreshing = False
         self._show_dialog = True
         self._action_buttons: list[QPushButton] = []
+        self._sidebar_sections: dict[str, CollapsibleSection] = {}
+        self._busy_mode: str | None = None
         self.setWindowTitle("TagFlow")
         self.resize(1360, 920)
         self.setMinimumSize(1100, 700)
@@ -125,8 +141,7 @@ class MainWindow(QMainWindow):
         self._seen = set()
         self._scan_problems = 0
         self._show_path(str(folder))
-        self._set_busy(True)
-        self.status_label.setText("Preparando análisis…")
+        self._set_busy(True, mode="scan", title="Indexando carpeta", detail="Preparando el recorrido…")
         fingerprints = self.db.fingerprints(str(folder))
         worker = ScanWorker(
             folder,
@@ -277,8 +292,12 @@ class MainWindow(QMainWindow):
         if not pending:
             self._present_duplicates()
             return
-        self._set_busy(True)
-        self.status_label.setText("Comparando imágenes…")
+        self._set_busy(
+            True,
+            mode="hash",
+            title="Buscando duplicados",
+            detail="Calculando firmas de las imágenes pendientes…",
+        )
         worker = DuplicateWorker(pending, exact, visual)
         self._hash_worker = worker
         worker.hashed_batch.connect(self._on_hashed_batch)
@@ -404,16 +423,35 @@ class MainWindow(QMainWindow):
         dup_layout.addWidget(self.visual_check)
         dup_layout.addWidget(self.duplicate_button)
         self.stats = StatsPanel()
-        layout.addWidget(self._card("Carpeta", folder))
-        layout.addWidget(self._card("Filtros", self.filters))
-        layout.addWidget(self._card("Duplicados", duplicates))
-        layout.addWidget(self._card("Estadísticas", self.stats))
+        collapsed = self._load_collapsed_sections()
+        first_run = self.db.get_setting("sidebar_ready") != "1"
+        layout.addWidget(
+            self._section("folder", "Carpeta", folder, expanded="folder" not in collapsed)
+        )
+        layout.addWidget(
+            self._section("filters", "Filtros", self.filters, expanded="filters" not in collapsed)
+        )
+        layout.addWidget(
+            self._section(
+                "duplicates",
+                "Duplicados",
+                duplicates,
+                expanded="duplicates" not in collapsed,
+            )
+        )
+        # En la primera apertura Estadísticas empieza plegada para dejar aire arriba.
+        stats_open = False if first_run else "stats" not in collapsed
+        layout.addWidget(self._section("stats", "Estadísticas", self.stats, expanded=stats_open))
+        if first_run:
+            self.db.set_setting("sidebar_ready", "1")
+            self._save_collapsed_sections()
         layout.addStretch(1)
         scroll.setWidget(inner)
         return scroll
 
     def _build_center(self) -> QWidget:
-        wrap = QWidget()
+        host = _WorkHost()
+        wrap = QWidget(host)
         layout = QVBoxLayout(wrap)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -471,12 +509,17 @@ class MainWindow(QMainWindow):
         layout.addLayout(pager)
         layout.addLayout(actions)
         layout.addWidget(self.gallery, 1)
-        return wrap
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.addWidget(wrap)
+        self.busy_overlay = BusyOverlay(host)
+        host.overlay = self.busy_overlay
+        return host
 
     def _build_inspector(self) -> QWidget:
         self.inspector = Inspector()
         self.inspector.tags_changed.connect(self._on_tags)
-        frame = self._card("Imagen", self.inspector)
+        frame = self._section("inspector", "Imagen", self.inspector, expanded=True, persist=False)
         frame.setFixedWidth(340)
         return frame
 
@@ -506,17 +549,35 @@ class MainWindow(QMainWindow):
         about.triggered.connect(self._about)
         help_menu.addAction(about)
 
-    def _card(self, title: str, content: QWidget) -> QFrame:
-        frame = QFrame()
-        frame.setObjectName("Card")
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-        heading = QLabel(title.upper())
-        heading.setObjectName("Section")
-        layout.addWidget(heading)
-        layout.addWidget(content)
-        return frame
+    def _section(
+        self,
+        key: str,
+        title: str,
+        content: QWidget,
+        *,
+        expanded: bool = True,
+        persist: bool = True,
+    ) -> CollapsibleSection:
+        section = CollapsibleSection(key, title, content, expanded=expanded)
+        if persist:
+            self._sidebar_sections[key] = section
+            section.toggled.connect(self._on_section_toggled)
+        return section
+
+    def _load_collapsed_sections(self) -> set[str]:
+        raw = self.db.get_setting("sidebar_collapsed") or ""
+        return {part for part in raw.split(",") if part}
+
+    def _save_collapsed_sections(self) -> None:
+        collapsed = [
+            key
+            for key, section in self._sidebar_sections.items()
+            if not section.is_expanded()
+        ]
+        self.db.set_setting("sidebar_collapsed", ",".join(sorted(collapsed)))
+
+    def _on_section_toggled(self, _key: str, _expanded: bool) -> None:
+        self._save_collapsed_sections()
 
     def _restore_last_folder(self) -> None:
         raw = self.db.get_setting("last_folder")
@@ -589,7 +650,9 @@ class MainWindow(QMainWindow):
             return
         self.progress.setMaximum(max(total, 1))
         self.progress.setValue(current)
-        self.status_label.setText(f"Indexando {current} de {total}")
+        detail = f"{current} de {total} archivos"
+        self.status_label.setText(f"Indexando {detail}")
+        self.busy_overlay.set_progress(current, total, detail)
 
     def _on_scan_finished(self) -> None:
         worker = self.sender()
@@ -622,7 +685,9 @@ class MainWindow(QMainWindow):
             return
         self.progress.setMaximum(max(total, 1))
         self.progress.setValue(current)
-        self.status_label.setText(f"Comparando {current} de {total}")
+        detail = f"{current} de {total} imágenes"
+        self.status_label.setText(f"Comparando {detail}")
+        self.busy_overlay.set_progress(current, total, detail)
 
     def _on_hash_finished(self) -> None:
         if self.sender() is not self._hash_worker:
@@ -691,8 +756,9 @@ class MainWindow(QMainWindow):
             current = self.gallery.page()
             pages = self.gallery.page_count()
         self.page_label.setText(f"Página {current + 1} / {pages}")
-        self.prev_page.setEnabled(current > 0)
-        self.next_page.setEnabled(current + 1 < pages)
+        idle = not self._busy
+        self.prev_page.setEnabled(idle and current > 0)
+        self.next_page.setEnabled(idle and current + 1 < pages)
 
     def _on_tags(self, tags: list[str]) -> None:
         record = self.inspector.record
@@ -855,12 +921,32 @@ class MainWindow(QMainWindow):
         if worker.isRunning():
             worker.wait(5000)
 
-    def _set_busy(self, busy: bool) -> None:
+    def _set_busy(
+        self,
+        busy: bool,
+        *,
+        mode: str | None = None,
+        title: str = "Trabajando…",
+        detail: str = "",
+    ) -> None:
         self._busy = busy
+        self._busy_mode = mode if busy else None
         self.progress.setVisible(busy)
+        if busy:
+            self.progress.setRange(0, 0)
+            self.status_label.setText(title)
+            self.busy_overlay.show_busy(title, detail)
+        else:
+            self.busy_overlay.hide_busy()
         for button in self._action_buttons:
             button.setEnabled(not busy)
+        self.open_button.setEnabled(not busy)
+        self.filters.setEnabled(not busy)
+        self.exact_check.setEnabled(not busy)
+        self.visual_check.setEnabled(not busy)
+        self.inspector.setEnabled(not busy)
         self._sync_buttons()
+        self._update_page_label()
 
     def _show_path(self, path: str | None) -> None:
         if not path:

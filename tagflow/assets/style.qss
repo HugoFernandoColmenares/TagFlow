@@ -260,3 +260,35 @@ QLabel#Chip {
     border-radius: 9px;
     padding: 3px 8px;
 }
+
+QFrame#CollapseHeader {
+    background: transparent;
+    border: none;
+}
+
+QLabel#CollapseChevron {
+    color: #e8a54b;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+QFrame#Card[collapsed="true"] {
+    padding-bottom: 2px;
+}
+
+QFrame#BusyOverlay {
+    background: rgba(12, 14, 18, 0.78);
+    border: none;
+}
+
+QFrame#BusyPanel {
+    background: #1c2028;
+    border: 1px solid #3c4452;
+    border-radius: 16px;
+}
+
+QLabel#BusyTitle {
+    font-size: 18px;
+    font-weight: 650;
+    color: #f3efe6;
+}
