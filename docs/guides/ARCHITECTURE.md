@@ -1,12 +1,12 @@
-# Architecture Guidelines — PyLens: Local Image Organization & Metadata Engine
+# Architecture Guidelines — TagFlow: Local Image Organization & Metadata Engine
 
-This document outlines the architectural standards, directory layout, use cases, and technical implementation blueprint for **PyLens**, a desktop-grade Python application designed for local image sorting, tagging, duplicate detection, and batch manipulation.
+This document outlines the architectural standards, directory layout, use cases, and technical implementation blueprint for **TagFlow**, a desktop-grade Python application designed for local image sorting, tagging, duplicate detection, and batch manipulation.
 
 ---
 
 ## 1. Architectural Vision & Core Principles
 
-PyLens operates as a local-first, standalone desktop application combining a Python backend (handling filesystem operations, image parsing, and SQLite persistence) with a clean, responsive graphical interface.
+TagFlow operates as a local-first, standalone desktop application combining a Python backend (handling filesystem operations, image parsing, and SQLite persistence) with a clean, responsive graphical interface.
 
 * **Local-First & Privacy-Focused:** All file parsing, SQLite transactions, and image processing happen entirely on the user's machine. No assets or metadata ever leave the local environment.
 * **Separation of Concerns:** Strict adherence to clean architecture principles—decoupling the filesystem reader/writers and the SQLite storage layer from the UI presentation layer.
@@ -29,7 +29,7 @@ PyLens operates as a local-first, standalone desktop application combining a Pyt
 ## 3. Modular Directory Structure
 
 ```text
-pylens/
+tagflow/
 ├── core/                        # Core backend controllers & business logic
 │   ├── scanner.py               # Directory traversal and metadata extraction
 │   ├── duplicates.py            # Duplicate detection engine (naming patterns + hashing)

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from pylens.core.analytics import folder_depth, summarize
-from pylens.core.models import ImageRecord
+from tagflow.core.analytics import folder_depth, summarize
+from tagflow.core.models import ImageRecord
 
 
 def test_summary_counts_formats_tags_and_depth() -> None:

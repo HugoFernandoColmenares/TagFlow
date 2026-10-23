@@ -20,10 +20,10 @@ from PySide6.QtWidgets import QApplication, QScrollArea
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from pylens.ui.components.dialogs import ErrorDialog
-from pylens.ui.main_window import MainWindow
-from pylens.ui.theme import apply_theme
-from pylens.utils.config import Settings
+from tagflow.ui.components.dialogs import ErrorDialog
+from tagflow.ui.main_window import MainWindow
+from tagflow.ui.theme import apply_theme
+from tagflow.utils.config import Settings
 
 OUT = ROOT / "docs" / "screenshots"
 
@@ -129,7 +129,7 @@ def add_tag(window: MainWindow, filename: str, tag: str) -> None:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    work = ROOT / ".pylens-demo"
+    work = ROOT / ".tagflow-demo"
     library = work / "biblioteca"
     data = work / "datos"
     if data.exists():
@@ -139,8 +139,8 @@ def main() -> None:
     apply_theme(app)
     settings = Settings(
         data_dir=data,
-        db_path=data / "pylens.sqlite3",
-        log_path=data / "pylens.log",
+        db_path=data / "tagflow.sqlite3",
+        log_path=data / "tagflow.log",
         log_level="WARNING",
         thumb_size=320,
     )

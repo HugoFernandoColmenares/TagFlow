@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from pylens.core.duplicates import (
+from tagflow.core.duplicates import (
     canonical_stem,
     group_by_exact,
     group_by_name,
     group_by_phash,
     hamming,
 )
-from pylens.core.models import ImageRecord
+from tagflow.core.models import ImageRecord
 
 
 @pytest.mark.parametrize(

@@ -26,7 +26,7 @@ def draw_icon(size: int) -> Image.Image:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[1] / "pylens" / "assets"
+    root = Path(__file__).resolve().parents[1] / "tagflow" / "assets"
     root.mkdir(parents=True, exist_ok=True)
     image = draw_icon(256)
     image.save(root / "icon.png")

@@ -9,8 +9,8 @@ from pathlib import Path
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from pylens.ui.main_window import MainWindow
-from pylens.utils.config import Settings
+from tagflow.ui.main_window import MainWindow
+from tagflow.utils.config import Settings
 from tests.images import save_swatch
 
 
@@ -105,8 +105,8 @@ def test_window_indexes_filters_tags_and_file_operations(qapp: QApplication, tmp
 def _settings(data: Path) -> Settings:
     return Settings(
         data_dir=data,
-        db_path=data / "pylens.sqlite3",
-        log_path=data / "pylens.log",
+        db_path=data / "tagflow.sqlite3",
+        log_path=data / "tagflow.log",
         log_level="WARNING",
         thumb_size=96,
     )

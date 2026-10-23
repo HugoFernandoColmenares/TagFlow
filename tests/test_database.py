@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pylens.core.database import Database
-from pylens.core.models import ImageRecord
-from pylens.core.scanner import extract_metadata
+from tagflow.core.database import Database
+from tagflow.core.models import ImageRecord
+from tagflow.core.scanner import extract_metadata
 from tests.images import save_swatch
 
 
 def test_filters_tags_and_hash_invalidation(tmp_path: Path) -> None:
-    database = Database(tmp_path / "pylens.sqlite3")
+    database = Database(tmp_path / "tagflow.sqlite3")
     database.initialize()
     root = str(tmp_path)
     small = _manual(root, "a.jpg", 2_000, "HD", ["Paisaje"], md5="uno")
@@ -42,7 +42,7 @@ def test_filters_tags_and_hash_invalidation(tmp_path: Path) -> None:
 
 def test_real_image_roundtrip_keeps_tags(tmp_path: Path) -> None:
     image = save_swatch(tmp_path / "faro.jpg", (40, 30), "gold")
-    database = Database(tmp_path / "data" / "pylens.sqlite3")
+    database = Database(tmp_path / "data" / "tagflow.sqlite3")
     database.initialize()
     record = extract_metadata(image, tmp_path, tmp_path / "thumbs", 32)
     stored = database.upsert_image(record)

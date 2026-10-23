@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from pylens.core.errors import ScanError
-from pylens.core.imaging import compute_phash, compute_sharpness, quality_tier
-from pylens.core.scanner import discover_images, extract_metadata
+from tagflow.core.errors import ScanError
+from tagflow.core.imaging import compute_phash, compute_sharpness, quality_tier
+from tagflow.core.scanner import discover_images, extract_metadata
 from tests.images import checkerboard, save_swatch
 
 
@@ -44,7 +44,7 @@ def test_discover_records_permission_errors(monkeypatch, tmp_path: Path) -> None
             onerror(PermissionError(13, "Acceso denegado", str(tmp_path / "privada")))
         yield str(tmp_path), [], []
 
-    monkeypatch.setattr("pylens.core.scanner.os.walk", fake_walk)
+    monkeypatch.setattr("tagflow.core.scanner.os.walk", fake_walk)
     found, problems = discover_images(tmp_path)
     assert found == []
     assert problems
@@ -66,7 +66,11 @@ def test_extract_reads_dimensions_and_thumbnail(tmp_path: Path) -> None:
     assert record.format == "JPEG"
     assert record.thumb_path is not None
     assert Path(record.thumb_path).is_file()
-    assert record.sharpness is not None
+    assert record.sharpness is None
+    measured = extract_metadata(
+        image, tmp_path, tmp_path / "thumbs", 80, measure_sharpness=True
+    )
+    assert measured.sharpness is not None
 
 
 def test_sharpness_drops_when_blurred(tmp_path: Path) -> None:
@@ -78,7 +82,7 @@ def test_sharpness_drops_when_blurred(tmp_path: Path) -> None:
 def test_phash_matches_format_variants_and_rejects_other_scenes(tmp_path: Path) -> None:
     from PIL import Image, ImageDraw
 
-    from pylens.core.duplicates import hamming
+    from tagflow.core.duplicates import hamming
 
     scene = Image.new("RGB", (160, 120), "white")
     draw = ImageDraw.Draw(scene)

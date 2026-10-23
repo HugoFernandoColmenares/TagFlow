@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from pylens.core.errors import UserError
-from pylens.utils.files import (
+from tagflow.core.errors import UserError
+from tagflow.utils.files import (
     group_files,
     optimize_image,
     rename_file,
@@ -51,7 +51,7 @@ def test_group_moves_and_rolls_back(monkeypatch, tmp_path: Path) -> None:
             raise OSError(28, "disco lleno")
         return real_move(src, dst)
 
-    monkeypatch.setattr("pylens.utils.files.shutil.move", flaky)
+    monkeypatch.setattr("tagflow.utils.files.shutil.move", flaky)
     with pytest.raises(UserError):
         group_files([other_a, other_b], tmp_path / "otro")
     assert other_a.is_file()
