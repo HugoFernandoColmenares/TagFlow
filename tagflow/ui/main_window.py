@@ -12,7 +12,6 @@ from PySide6.QtGui import QAction, QColor, QFontMetrics, QIcon, QKeySequence, QP
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -39,6 +38,7 @@ from tagflow.ui.components.dialogs import DuplicateDialog, ErrorDialog
 from tagflow.ui.components.filter_bar import FilterBar
 from tagflow.ui.components.gallery import Gallery
 from tagflow.ui.components.inspector import Inspector
+from tagflow.ui.components.pickers import FolderPickerDialog
 from tagflow.ui.components.stats_panel import StatsPanel
 from tagflow.ui.workers import DuplicateWorker, ScanWorker
 from tagflow.utils.config import Settings, asset_path, load_settings
@@ -52,7 +52,7 @@ from tagflow.utils.files import (
     zip_files,
 )
 from tagflow.utils.logging import setup_logging
-from tagflow.utils.text import QUALITY_ORDER, format_bytes
+from tagflow.utils.text import QUALITY_ORDER, format_bytes, quality_label
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +241,61 @@ class MainWindow(QMainWindow):
         self.refresh_view()
         return destination
 
+    def quality_records(self) -> list[ImageRecord]:
+        """Imágenes que entrarían en la agrupación por calidad.
+
+        Usa las marcadas cuando hay alguna; si no, todo el índice de la carpeta.
+        """
+
+        self._ensure_idle()
+        if self.scan_root is None:
+            raise UserError("Primero abre una carpeta.")
+        marked = self.gallery.marked()
+        if marked:
+            return marked
+        return [
+            record
+            for record in self.db.list_root(str(self.scan_root))
+            if record.id is not None
+        ]
+
+    def group_by_quality(self) -> list[tuple[str, Path, int]]:
+        """Crea una carpeta por calidad y mueve allí sus imágenes.
+
+        Devuelve (calidad, carpeta, movidas). Los nombres repetidos reciben un
+        sufijo para no sobrescribir nada, y repetir la acción no mueve de nuevo.
+        """
+
+        self._ensure_idle()
+        if self.scan_root is None:
+            raise UserError("Primero abre una carpeta.")
+        buckets: dict[str, list[ImageRecord]] = {}
+        for record in self.quality_records():
+            if not Path(record.path).is_file():
+                continue
+            buckets.setdefault(record.quality_tier, []).append(record)
+        if not buckets:
+            raise UserError("No encuentro las imágenes para agrupar.")
+        order = [tier for tier in QUALITY_ORDER if tier in buckets]
+        order.extend(tier for tier in buckets if tier not in QUALITY_ORDER)
+        summary: list[tuple[str, Path, int]] = []
+        for tier in order:
+            batch = buckets[tier]
+            destination = self.scan_root / quality_label(tier)
+            moved = group_files(
+                [Path(record.path) for record in batch],
+                destination,
+                uniquify=True,
+            )
+            mapping = {str(src.resolve()).casefold(): target.resolve() for src, target in moved}
+            for record in batch:
+                target = mapping.get(str(Path(record.path).resolve()).casefold())
+                if target is not None:
+                    self._remember_move(record, target)
+            summary.append((tier, destination, len(moved)))
+        self.refresh_view()
+        return summary
+
     def zip_selected(self, archive: Path) -> Path:
         self._ensure_idle()
         return zip_files(
@@ -401,10 +456,16 @@ class MainWindow(QMainWindow):
         self.open_button.clicked.connect(self._choose_folder)
         self.rescan_button = QPushButton("Volver a indexar")
         self.rescan_button.clicked.connect(self._rescan)
+        self.quality_button = QPushButton("Agrupar por calidad")
+        self.quality_button.setToolTip(
+            "Crea una carpeta por calidad (4K, HD, Baja) y mueve allí las imágenes marcadas."
+        )
+        self.quality_button.clicked.connect(self._prompt_quality)
         self.path_label = QLabel("Ninguna carpeta abierta")
         self.path_label.setObjectName("Muted")
         folder_layout.addWidget(self.open_button)
         folder_layout.addWidget(self.rescan_button)
+        folder_layout.addWidget(self.quality_button)
         folder_layout.addWidget(self.path_label)
         self.filters = FilterBar()
         self.filters.changed.connect(self.refresh_view)
@@ -476,13 +537,13 @@ class MainWindow(QMainWindow):
         self.gallery.open_requested.connect(self._choose_folder)
         self.gallery.page_changed.connect(self._on_page_changed)
         pager = QHBoxLayout()
-        self.prev_page = QPushButton("Anterior")
-        self.prev_page.setProperty("variant", "ghost")
+        self.prev_page = QPushButton("← Anterior")
+        self.prev_page.setProperty("variant", "primary")
         self.prev_page.clicked.connect(self._prev_page)
         self.page_label = QLabel("Página 1 / 1")
         self.page_label.setObjectName("Muted")
-        self.next_page = QPushButton("Siguiente")
-        self.next_page.setProperty("variant", "ghost")
+        self.next_page = QPushButton("Siguiente →")
+        self.next_page.setProperty("variant", "primary")
         self.next_page.clicked.connect(self._next_page)
         pager.addWidget(self.prev_page)
         pager.addWidget(self.page_label)
@@ -540,9 +601,12 @@ class MainWindow(QMainWindow):
         tools = self.menuBar().addMenu("Herramientas")
         duplicates = QAction("Buscar duplicados", self)
         duplicates.triggered.connect(lambda: self._run(lambda: self.find_duplicates(True)))
+        quality = QAction("Agrupar por calidad", self)
+        quality.triggered.connect(self._prompt_quality)
         ledger = QAction("Registro de errores", self)
         ledger.triggered.connect(self.show_errors)
         tools.addAction(duplicates)
+        tools.addAction(quality)
         tools.addAction(ledger)
         help_menu = self.menuBar().addMenu("Ayuda")
         about = QAction("Acerca de TagFlow", self)
@@ -600,11 +664,20 @@ class MainWindow(QMainWindow):
         self._sync_buttons()
 
     def _choose_folder(self) -> None:
-        start = str(self.scan_root or Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Elegir carpeta", start)
-        if not chosen:
+        dialog = FolderPickerDialog(
+            self,
+            title="Abrir carpeta",
+            start=self.scan_root or Path.home(),
+            accept_text="Abrir esta carpeta",
+            hint=(
+                "Elige la carpeta que quieres indexar. Puedes escribir una ruta, "
+                "cambiar de unidad o crear una carpeta nueva sin salir de TagFlow."
+            ),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self._run(lambda: self.load_folder(Path(chosen)))
+        chosen = dialog.selected_folder()
+        self._run(lambda: self.load_folder(chosen))
 
     def _rescan(self) -> None:
         if self.scan_root is None:
@@ -790,10 +863,25 @@ class MainWindow(QMainWindow):
             self._run(lambda: self.rename_selected(name))
 
     def _prompt_move(self) -> None:
-        start = str(self.scan_root or Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Mover a…", start)
-        if chosen:
-            self._run(lambda: self.move_selected(Path(chosen)))
+        try:
+            records = self._batch()
+        except UserError as exc:
+            QMessageBox.information(self, "TagFlow", str(exc))
+            return
+        dialog = FolderPickerDialog(
+            self,
+            title="Mover imágenes",
+            start=self.scan_root or Path.home(),
+            accept_text="Mover aquí",
+            hint=(
+                f"Se moverán {len(records)} imágenes a la carpeta que elijas. "
+                "Puedes crear una carpeta nueva en esta misma ventana."
+            ),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        destination = dialog.selected_folder()
+        self._run(lambda: self.move_selected(destination))
 
     def _prompt_group(self) -> None:
         name, accepted = QInputDialog.getText(
@@ -806,18 +894,62 @@ class MainWindow(QMainWindow):
             self._run(lambda: self.group_selected(name))
 
     def _prompt_zip(self) -> None:
-        start = str((self.scan_root or Path.home()) / "imagenes.zip")
-        chosen, _selected = QFileDialog.getSaveFileName(self, "Crear zip", start, "Zip (*.zip)")
-        if not chosen:
+        start = self.scan_root or Path.home()
+        dialog = FolderPickerDialog(
+            self,
+            title="Crear zip",
+            start=start,
+            accept_text="Crear zip",
+            hint="Elige la carpeta y el nombre del archivo comprimido. Todo queda dentro de TagFlow.",
+            file_name="imagenes.zip",
+            file_suffix=".zip",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        if not chosen.lower().endswith(".zip"):
-            chosen += ".zip"
+        archive = dialog.selected_path()
 
         def action() -> None:
-            archive = self.zip_selected(Path(chosen))
-            QMessageBox.information(self, "TagFlow", f"Archivo creado:\n{archive}")
+            created = self.zip_selected(archive)
+            QMessageBox.information(self, "TagFlow", f"Archivo creado:\n{created}")
 
         self._run(action)
+
+    def _prompt_quality(self) -> None:
+        try:
+            records = self.quality_records()
+        except UserError as exc:
+            QMessageBox.information(self, "TagFlow", str(exc))
+            return
+        counts: dict[str, int] = {}
+        for record in records:
+            counts[record.quality_tier] = counts.get(record.quality_tier, 0) + 1
+        if not counts:
+            QMessageBox.information(self, "TagFlow", "No hay imágenes para agrupar.")
+            return
+        order = [tier for tier in QUALITY_ORDER if tier in counts]
+        order.extend(tier for tier in counts if tier not in order)
+        detail = "\n".join(f"· {quality_label(tier)}: {counts[tier]}" for tier in order)
+        scope = "las imágenes marcadas" if self.gallery.marked() else "todas las imágenes del índice"
+        assert self.scan_root is not None
+        answer = QMessageBox.question(
+            self,
+            "Agrupar por calidad",
+            f"Se moverán {len(records)} imágenes de {scope} a carpetas dentro de:\n"
+            f"{self.scan_root}\n\n{detail}\n\n¿Continuar?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._run(self._show_quality_result)
+
+    def _show_quality_result(self) -> None:
+        summary = self.group_by_quality()
+        if not summary:
+            QMessageBox.information(self, "TagFlow", "No había imágenes que mover.")
+            return
+        lines = "\n".join(
+            f"{quality_label(tier)} → {folder.name} ({moved})"
+            for tier, folder, moved in summary
+        )
+        QMessageBox.information(self, "TagFlow", f"Imágenes organizadas:\n\n{lines}")
 
     def _prompt_optimize(self) -> None:
         quality, accepted = QInputDialog.getInt(
@@ -972,6 +1104,7 @@ class MainWindow(QMainWindow):
     def _sync_buttons(self) -> None:
         ready = self.scan_root is not None and not self._busy
         self.rescan_button.setEnabled(ready)
+        self.quality_button.setEnabled(ready)
         self.duplicate_button.setEnabled(ready)
 
     def _refresh_error_button(self) -> None:

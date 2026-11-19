@@ -76,8 +76,30 @@ def delete_file(path: Path) -> None:
         raise UserError(f"No pude eliminar {path.name}: {exc.strerror or exc}") from exc
 
 
-def group_files(paths: list[Path], destination: Path) -> list[tuple[Path, Path]]:
-    """Crea la carpeta destino y mueve el lote. Si algo falla, deshace lo movido."""
+def _unique_target(directory: Path, name: str, taken: set[str]) -> Path:
+    """Elige un nombre libre dentro de `directory`, con sufijos (1), (2)…"""
+
+    candidate = directory / name
+    stem = candidate.stem
+    suffix = candidate.suffix
+    index = 1
+    while candidate.exists() or candidate.name.casefold() in taken:
+        candidate = directory / f"{stem} ({index}){suffix}"
+        index += 1
+    taken.add(candidate.name.casefold())
+    return candidate
+
+
+def group_files(
+    paths: list[Path],
+    destination: Path,
+    *,
+    uniquify: bool = False,
+) -> list[tuple[Path, Path]]:
+    """Crea la carpeta destino y mueve el lote. Si algo falla, deshace lo movido.
+
+    Con `uniquify`, los nombres repetidos reciben un sufijo en vez de abortar.
+    """
 
     if not paths:
         raise UserError("Selecciona imágenes para agrupar.")
@@ -86,12 +108,16 @@ def group_files(paths: list[Path], destination: Path) -> list[tuple[Path, Path]]
     except OSError as exc:
         raise UserError(f"No pude crear la carpeta: {exc.strerror or exc}") from exc
     planned: list[tuple[Path, Path]] = []
+    taken: set[str] = set()
     for src in paths:
         if destination.resolve() == src.parent.resolve():
             continue
-        target = destination / src.name
-        if target.exists():
-            raise UserError(f"Ya existe {target.name} dentro de la carpeta de destino.")
+        if uniquify:
+            target = _unique_target(destination, src.name, taken)
+        else:
+            target = destination / src.name
+            if target.exists():
+                raise UserError(f"Ya existe {target.name} dentro de la carpeta de destino.")
         planned.append((src, target))
     if not planned:
         return []

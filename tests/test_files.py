@@ -58,6 +58,23 @@ def test_group_moves_and_rolls_back(monkeypatch, tmp_path: Path) -> None:
     assert other_b.is_file()
 
 
+def test_group_uniquify_keeps_same_name_files(tmp_path: Path) -> None:
+    first = tmp_path / "uno" / "foto.jpg"
+    second = tmp_path / "dos" / "foto.jpg"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_bytes(b"1")
+    second.write_bytes(b"2")
+    destination = tmp_path / "lote"
+    moved = group_files([first, second], destination, uniquify=True)
+    assert [target.name for _source, target in moved] == ["foto.jpg", "foto (1).jpg"]
+    assert (destination / "foto.jpg").read_bytes() == b"1"
+    assert (destination / "foto (1).jpg").read_bytes() == b"2"
+
+    again = group_files([destination / "foto.jpg"], destination, uniquify=True)
+    assert again == []
+
+
 def test_zip_preserves_relative_names(tmp_path: Path) -> None:
     folder = tmp_path / "fotos"
     image = folder / "viaje" / "faro.jpg"

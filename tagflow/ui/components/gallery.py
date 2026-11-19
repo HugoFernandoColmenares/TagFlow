@@ -135,6 +135,13 @@ class Gallery(QScrollArea):
         selected = self.selected()
         return [] if selected is None else [selected]
 
+    def marked(self) -> list[ImageRecord]:
+        """Solo las imágenes marcadas, en el orden del índice."""
+
+        if not self._checked:
+            return []
+        return [record for record in self._records if record.id in self._checked]
+
     def mark_visible(self) -> None:
         for record in self._page_records():
             if record.id is not None:

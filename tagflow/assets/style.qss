@@ -292,3 +292,25 @@ QLabel#BusyTitle {
     font-weight: 650;
     color: #f3efe6;
 }
+
+QLabel#FormError {
+    color: #ffb4a8;
+    background: #3a2222;
+    border: 1px solid #6d3532;
+    border-radius: 8px;
+    padding: 6px 8px;
+}
+
+QListWidget::item {
+    padding: 7px 6px;
+    border-radius: 6px;
+}
+
+QListWidget::item:hover {
+    background: #262c37;
+}
+
+QListWidget::item:selected {
+    background: #2f3a4c;
+    color: #f3efe6;
+}
