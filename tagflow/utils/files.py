@@ -90,27 +90,70 @@ def _unique_target(directory: Path, name: str, taken: set[str]) -> Path:
     return candidate
 
 
+def find_existing_subdir(root: Path, name: str) -> Path | None:
+    """Devuelve un subdirectorio de `root` con ese nombre (sin distinguir mayúsculas)."""
+
+    wanted = name.casefold()
+    try:
+        for entry in root.iterdir():
+            if entry.is_dir() and entry.name.casefold() == wanted:
+                return entry
+    except OSError:
+        return None
+    return None
+
+
+def resolve_subdir(root: Path, name: str) -> Path:
+    """Ruta de un subdirectorio: reutiliza el existente o apunta al nombre canónico."""
+
+    existing = find_existing_subdir(root, name)
+    return existing if existing is not None else root / name
+
+
+def ensure_directory(path: Path) -> Path:
+    """Reutiliza la carpeta si ya existe; si no, la crea.
+
+    Si el nombre está ocupado por un archivo, avisa en vez de pisarlo.
+    Preferimos el subdirectorio real del disco para respetar mayúsculas existentes.
+    """
+
+    if path.parent.exists():
+        existing = find_existing_subdir(path.parent, path.name)
+        if existing is not None:
+            return existing
+    if path.exists():
+        if path.is_dir():
+            return path
+        raise UserError(
+            f"Ya existe un archivo llamado {path.name}; no puedo usarlo como carpeta."
+        )
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise UserError(f"No pude crear la carpeta: {exc.strerror or exc}") from exc
+    return path
+
+
 def group_files(
     paths: list[Path],
     destination: Path,
     *,
     uniquify: bool = False,
 ) -> list[tuple[Path, Path]]:
-    """Crea la carpeta destino y mueve el lote. Si algo falla, deshace lo movido.
+    """Mueve el lote a `destination`. Si la carpeta ya existe, la reutiliza.
 
     Con `uniquify`, los nombres repetidos reciben un sufijo en vez de abortar.
+    Si algo falla a mitad de camino, deshace lo movido.
     """
 
     if not paths:
         raise UserError("Selecciona imágenes para agrupar.")
-    try:
-        destination.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise UserError(f"No pude crear la carpeta: {exc.strerror or exc}") from exc
+    destination = ensure_directory(destination)
     planned: list[tuple[Path, Path]] = []
     taken: set[str] = set()
+    dest_resolved = destination.resolve()
     for src in paths:
-        if destination.resolve() == src.parent.resolve():
+        if dest_resolved == src.parent.resolve():
             continue
         if uniquify:
             target = _unique_target(destination, src.name, taken)

@@ -11,9 +11,12 @@ from PIL import Image
 
 from tagflow.core.errors import UserError
 from tagflow.utils.files import (
+    ensure_directory,
+    find_existing_subdir,
     group_files,
     optimize_image,
     rename_file,
+    resolve_subdir,
     sanitize_filename,
     zip_files,
 )
@@ -56,6 +59,35 @@ def test_group_moves_and_rolls_back(monkeypatch, tmp_path: Path) -> None:
         group_files([other_a, other_b], tmp_path / "otro")
     assert other_a.is_file()
     assert other_b.is_file()
+
+
+def test_ensure_directory_reuses_existing_case_insensitive(tmp_path: Path) -> None:
+    existing = tmp_path / "Baja"
+    existing.mkdir()
+    assert find_existing_subdir(tmp_path, "baja") == existing
+    assert resolve_subdir(tmp_path, "BAJA") == existing
+    assert ensure_directory(tmp_path / "baja") == existing
+    assert ensure_directory(tmp_path / "HD").is_dir()
+    assert (tmp_path / "HD").is_dir()
+    blocker = tmp_path / "archivo"
+    blocker.write_bytes(b"x")
+    with pytest.raises(UserError):
+        ensure_directory(blocker)
+
+
+def test_group_reuses_destination_without_recreating(tmp_path: Path) -> None:
+    destination = tmp_path / "HD"
+    destination.mkdir()
+    marker = destination / "ya.jpg"
+    marker.write_bytes(b"old")
+    incoming = tmp_path / "nueva.jpg"
+    incoming.write_bytes(b"new")
+    before = destination.resolve()
+    moved = group_files([incoming, marker], destination, uniquify=True)
+    assert [target.name for _src, target in moved] == ["nueva.jpg"]
+    assert destination.resolve() == before
+    assert (destination / "ya.jpg").read_bytes() == b"old"
+    assert (destination / "nueva.jpg").read_bytes() == b"new"
 
 
 def test_group_uniquify_keeps_same_name_files(tmp_path: Path) -> None:

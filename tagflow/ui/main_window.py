@@ -48,6 +48,7 @@ from tagflow.utils.files import (
     move_file,
     optimize_image,
     rename_file,
+    resolve_subdir,
     sanitize_filename,
     zip_files,
 )
@@ -259,29 +260,47 @@ class MainWindow(QMainWindow):
             if record.id is not None
         ]
 
-    def group_by_quality(self) -> list[tuple[str, Path, int]]:
-        """Crea una carpeta por calidad y mueve allí sus imágenes.
+    def quality_destinations(
+        self, records: list[ImageRecord] | None = None
+    ) -> list[tuple[str, Path, list[ImageRecord]]]:
+        """Agrupa registros por calidad y resuelve la carpeta destino de cada nivel.
 
-        Devuelve (calidad, carpeta, movidas). Los nombres repetidos reciben un
-        sufijo para no sobrescribir nada, y repetir la acción no mueve de nuevo.
+        Si `4K`/`HD`/`Baja` ya existen bajo la carpeta analizada, las reutiliza.
+        Solo incluye imágenes que aún no están en su carpeta de calidad.
         """
 
         self._ensure_idle()
         if self.scan_root is None:
             raise UserError("Primero abre una carpeta.")
+        batch = records if records is not None else self.quality_records()
         buckets: dict[str, list[ImageRecord]] = {}
-        for record in self.quality_records():
-            if not Path(record.path).is_file():
+        for record in batch:
+            path = Path(record.path)
+            if not path.is_file():
+                continue
+            destination = resolve_subdir(self.scan_root, quality_label(record.quality_tier))
+            if path.parent.resolve() == destination.resolve():
                 continue
             buckets.setdefault(record.quality_tier, []).append(record)
-        if not buckets:
-            raise UserError("No encuentro las imágenes para agrupar.")
         order = [tier for tier in QUALITY_ORDER if tier in buckets]
         order.extend(tier for tier in buckets if tier not in QUALITY_ORDER)
+        return [
+            (tier, resolve_subdir(self.scan_root, quality_label(tier)), buckets[tier])
+            for tier in order
+        ]
+
+    def group_by_quality(self) -> list[tuple[str, Path, int]]:
+        """Mueve imágenes a carpetas por calidad, reutilizando las que ya existan.
+
+        Devuelve (calidad, carpeta, movidas). Los nombres repetidos reciben un
+        sufijo para no sobrescribir nada, y repetir la acción no mueve de nuevo.
+        """
+
+        planned = self.quality_destinations()
+        if not planned:
+            return []
         summary: list[tuple[str, Path, int]] = []
-        for tier in order:
-            batch = buckets[tier]
-            destination = self.scan_root / quality_label(tier)
+        for tier, destination, batch in planned:
             moved = group_files(
                 [Path(record.path) for record in batch],
                 destination,
@@ -458,7 +477,8 @@ class MainWindow(QMainWindow):
         self.rescan_button.clicked.connect(self._rescan)
         self.quality_button = QPushButton("Agrupar por calidad")
         self.quality_button.setToolTip(
-            "Crea una carpeta por calidad (4K, HD, Baja) y mueve allí las imágenes marcadas."
+            "Mueve las imágenes a carpetas por calidad (4K, HD, Baja). "
+            "Si esas carpetas ya existen, las reutiliza."
         )
         self.quality_button.clicked.connect(self._prompt_quality)
         self.path_label = QLabel("Ninguna carpeta abierta")
@@ -917,25 +937,34 @@ class MainWindow(QMainWindow):
     def _prompt_quality(self) -> None:
         try:
             records = self.quality_records()
+            planned = self.quality_destinations(records)
         except UserError as exc:
             QMessageBox.information(self, "TagFlow", str(exc))
             return
-        counts: dict[str, int] = {}
-        for record in records:
-            counts[record.quality_tier] = counts.get(record.quality_tier, 0) + 1
-        if not counts:
-            QMessageBox.information(self, "TagFlow", "No hay imágenes para agrupar.")
+        if not planned:
+            QMessageBox.information(
+                self,
+                "TagFlow",
+                "No hay imágenes pendientes: ya están en sus carpetas de calidad.",
+            )
             return
-        order = [tier for tier in QUALITY_ORDER if tier in counts]
-        order.extend(tier for tier in counts if tier not in order)
-        detail = "\n".join(f"· {quality_label(tier)}: {counts[tier]}" for tier in order)
-        scope = "las imágenes marcadas" if self.gallery.marked() else "todas las imágenes del índice"
+        total = sum(len(batch) for _tier, _folder, batch in planned)
+        detail_lines: list[str] = []
+        for tier, folder, batch in planned:
+            reused = "reutiliza" if folder.is_dir() else "crea"
+            detail_lines.append(
+                f"· {quality_label(tier)} → {folder.name} ({len(batch)}, {reused})"
+            )
+        detail = "\n".join(detail_lines)
+        scope = "las marcadas" if self.gallery.marked() else "el índice"
         assert self.scan_root is not None
         answer = QMessageBox.question(
             self,
             "Agrupar por calidad",
-            f"Se moverán {len(records)} imágenes de {scope} a carpetas dentro de:\n"
-            f"{self.scan_root}\n\n{detail}\n\n¿Continuar?",
+            f"Se moverán {total} imágenes de {scope} dentro de:\n"
+            f"{self.scan_root}\n\n{detail}\n\n"
+            "Si la carpeta ya existe, no se crea otra: solo se mueven las imágenes.\n\n"
+            "¿Continuar?",
         )
         if answer == QMessageBox.StandardButton.Yes:
             self._run(self._show_quality_result)

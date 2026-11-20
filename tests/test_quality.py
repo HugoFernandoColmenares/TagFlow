@@ -58,7 +58,7 @@ def test_quality_grouping_creates_folders_and_is_idempotent(
     window.gallery.clear_marks()
     summary = window.group_by_quality()
     counts = {tier: moved for tier, _folder, moved in summary}
-    assert counts == {"4K": 0, "HD": 2, "Low-res": 1}
+    assert counts == {"HD": 2, "Low-res": 1}
     assert (library / "4K" / "grande.jpg").is_file()
     assert (library / "HD" / "foto.jpg").is_file()
     assert (library / "HD" / "foto (1).jpg").is_file()
@@ -69,13 +69,50 @@ def test_quality_grouping_creates_folders_and_is_idempotent(
 
     window.gallery.clear_marks()
     summary = window.group_by_quality()
-    assert {tier: moved for tier, _folder, moved in summary} == {
-        "4K": 0,
-        "HD": 0,
-        "Low-res": 0,
-    }
+    assert summary == []
     assert (library / "HD" / "foto.jpg").is_file()
     assert (library / "HD" / "foto (1).jpg").is_file()
+    window.close()
+
+
+def test_quality_grouping_reuses_existing_folders(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    """Si 4K/HD/Baja ya existen, no crea otras: mueve lo pendiente allí."""
+
+    library = tmp_path / "biblioteca"
+    for name in ("4K", "HD", "Baja"):
+        (library / name).mkdir(parents=True)
+    save_swatch(library / "4K" / "ya.jpg", (3840, 2160), "orange")
+    save_swatch(library / "nueva_4k.jpg", (3840, 2160), "red")
+    save_swatch(library / "nueva_hd.jpg", (1920, 1080), "steelblue")
+    save_swatch(library / "sub" / "nueva_baja.png", (640, 480), "purple", "line")
+
+    window = MainWindow(_settings(tmp_path / "datos"))
+    window.show()
+    QTest.qWait(30)
+    window.load_folder(library)
+    _wait_idle(window)
+
+    before = {name: (library / name).resolve() for name in ("4K", "HD", "Baja")}
+    summary = window.group_by_quality()
+    assert {tier: moved for tier, _folder, moved in summary} == {
+        "4K": 1,
+        "HD": 1,
+        "Low-res": 1,
+    }
+    after_dirs = sorted(path.name for path in library.iterdir() if path.is_dir())
+    assert after_dirs == ["4K", "Baja", "HD", "sub"]
+    for name, path in before.items():
+        assert (library / name).resolve() == path
+        assert path.is_dir()
+    assert (library / "4K" / "ya.jpg").is_file()
+    assert (library / "4K" / "nueva_4k.jpg").is_file()
+    assert (library / "HD" / "nueva_hd.jpg").is_file()
+    assert (library / "Baja" / "nueva_baja.png").is_file()
+    assert not (library / "nueva_4k.jpg").exists()
+    assert not (library / "nueva_hd.jpg").exists()
+    assert not (library / "sub" / "nueva_baja.png").exists()
     window.close()
 
 
