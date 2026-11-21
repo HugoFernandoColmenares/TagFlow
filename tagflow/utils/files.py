@@ -76,14 +76,46 @@ def delete_file(path: Path) -> None:
         raise UserError(f"No pude eliminar {path.name}: {exc.strerror or exc}") from exc
 
 
-def _unique_target(directory: Path, name: str, taken: set[str]) -> Path:
+def seed_taken_names(directory: Path) -> set[str]:
+    """Carga los nombres ya presentes en `directory` (casefold) de una sola pasada."""
+
+    taken: set[str] = set()
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        taken.add(entry.name.casefold())
+                except OSError:
+                    continue
+    except OSError:
+        return taken
+    return taken
+
+
+def _unique_target(
+    directory: Path,
+    name: str,
+    taken: set[str],
+    *,
+    trust_taken: bool = False,
+) -> Path:
     """Elige un nombre libre dentro de `directory`, con sufijos (1), (2)…"""
 
     candidate = directory / name
     stem = candidate.stem
     suffix = candidate.suffix
     index = 1
-    while candidate.exists() or candidate.name.casefold() in taken:
+    while True:
+        key = candidate.name.casefold()
+        if key in taken:
+            busy = True
+        elif trust_taken:
+            busy = False
+        else:
+            busy = candidate.exists()
+        if not busy:
+            break
         candidate = directory / f"{stem} ({index}){suffix}"
         index += 1
     taken.add(candidate.name.casefold())
@@ -132,6 +164,41 @@ def ensure_directory(path: Path) -> Path:
     except OSError as exc:
         raise UserError(f"No pude crear la carpeta: {exc.strerror or exc}") from exc
     return path
+
+
+def move_into_uniquified(
+    src: Path,
+    destination: Path,
+    taken: set[str] | None = None,
+    *,
+    prepared: bool = False,
+    trust_taken: bool = False,
+) -> Path:
+    """Mueve un archivo a `destination` con nombre único. Reutiliza la carpeta si existe.
+
+    Con `prepared=True` no vuelve a crear el destino (la cascada ya lo aseguró).
+    Con `trust_taken=True` evita `exists()` por archivo si `taken` ya se sembró.
+    """
+
+    if not prepared:
+        destination = ensure_directory(destination)
+    names = taken if taken is not None else set()
+    try:
+        if os.path.normcase(os.path.abspath(str(destination))) == os.path.normcase(
+            os.path.abspath(str(src.parent))
+        ):
+            return src
+    except OSError as exc:
+        raise UserError(f"No pude preparar el destino de {src.name}: {exc.strerror or exc}") from exc
+    target = _unique_target(destination, src.name, names, trust_taken=trust_taken)
+    try:
+        os.replace(str(src), str(target))
+    except OSError:
+        try:
+            shutil.move(str(src), str(target))
+        except OSError as exc:
+            raise UserError(f"No pude mover {src.name}: {exc.strerror or exc}") from exc
+    return Path(target)
 
 
 def group_files(

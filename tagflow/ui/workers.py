@@ -1,4 +1,4 @@
-"""Hilos de análisis y de comparación. No tocan la base de datos."""
+"""Hilos de análisis, comparación y cascada. No tocan la base de datos."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from tagflow.core.cascade import CascadeResult, cascade_group_by_quality, list_cascade_targets
 from tagflow.core.duplicates import hash_file, perceptual_hash
 from tagflow.core.errors import ScanError, UserError
 from tagflow.core.models import ImageRecord
@@ -158,3 +159,64 @@ class DuplicateWorker(QThread):
     def _emit_progress(self, current: int, total: int) -> None:
         if current == total or current % _PROGRESS_STEP == 0 or current == 1:
             self.progress.emit(current, total)
+
+
+class CascadeQualityWorker(QThread):
+    """Aplica agrupación por calidad a cada subcarpeta de una base."""
+
+    progress = Signal(int, int, str, int, int)
+    folder_done = Signal(object)
+    problem = Signal(str, str)
+    finished_result = Signal(object)
+
+    def __init__(self, base: Path, targets: list[Path] | None = None) -> None:
+        super().__init__()
+        self.base = base
+        self.targets = targets
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancel
+
+    def run(self) -> None:
+        try:
+            targets = self.targets
+            if targets is None:
+                targets = list_cascade_targets(self.base)
+            result = cascade_group_by_quality(
+                self.base,
+                targets=targets,
+                should_cancel=lambda: self._cancel,
+                on_progress=self._emit_progress,
+                on_folder=self._emit_folder,
+            )
+        except Exception as exc:
+            self.problem.emit(str(self.base), f"La cascada se detuvo: {exc}")
+            result = CascadeResult(base=self.base, cancelled=self._cancel)
+        self.finished_result.emit(result)
+
+    def _emit_progress(
+        self,
+        folder_index: int,
+        folder_total: int,
+        folder_name: str,
+        image_index: int,
+        image_total: int,
+    ) -> None:
+        self.progress.emit(folder_index, folder_total, folder_name, image_index, image_total)
+
+    def _emit_folder(self, folder_result: object) -> None:
+        self.folder_done.emit(folder_result)
+        errors = getattr(folder_result, "errors", None) or []
+        for path, message in errors[:20]:
+            self.problem.emit(str(path), message)
+        if len(errors) > 20:
+            folder = getattr(folder_result, "folder", self.base)
+            self.problem.emit(
+                str(folder),
+                f"… y {len(errors) - 20} errores más en esta carpeta.",
+            )

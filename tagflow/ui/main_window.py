@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from tagflow import __version__
 from tagflow.core.analytics import summarize
+from tagflow.core.cascade import CascadeResult, list_cascade_targets
 from tagflow.core.database import Database
 from tagflow.core.duplicates import group_by_exact, group_by_name, group_by_phash
 from tagflow.core.errors import UserError
@@ -40,7 +41,7 @@ from tagflow.ui.components.gallery import Gallery
 from tagflow.ui.components.inspector import Inspector
 from tagflow.ui.components.pickers import FolderPickerDialog
 from tagflow.ui.components.stats_panel import StatsPanel
-from tagflow.ui.workers import DuplicateWorker, ScanWorker
+from tagflow.ui.workers import CascadeQualityWorker, DuplicateWorker, ScanWorker
 from tagflow.utils.config import Settings, asset_path, load_settings
 from tagflow.utils.files import (
     delete_file,
@@ -106,14 +107,17 @@ class MainWindow(QMainWindow):
         self.scan_root: Path | None = None
         self._worker: ScanWorker | None = None
         self._hash_worker: DuplicateWorker | None = None
+        self._cascade_worker: CascadeQualityWorker | None = None
         self._seen: set[str] = set()
         self._scan_problems = 0
+        self._cascade_problems = 0
         self._busy = False
         self._refreshing = False
         self._show_dialog = True
         self._action_buttons: list[QPushButton] = []
         self._sidebar_sections: dict[str, CollapsibleSection] = {}
         self._busy_mode: str | None = None
+        self._last_cascade: CascadeResult | None = None
         self.setWindowTitle("TagFlow")
         self.resize(1360, 920)
         self.setMinimumSize(1100, 700)
@@ -124,7 +128,8 @@ class MainWindow(QMainWindow):
     def is_busy(self) -> bool:
         scanning = self._worker is not None and self._worker.isRunning()
         hashing = self._hash_worker is not None and self._hash_worker.isRunning()
-        return self._busy or scanning or hashing
+        cascading = self._cascade_worker is not None and self._cascade_worker.isRunning()
+        return self._busy or scanning or hashing or cascading
 
     def image_count(self) -> int:
         return self.gallery.image_count()
@@ -137,6 +142,7 @@ class MainWindow(QMainWindow):
             raise UserError("Elige una carpeta válida.")
         self._detach("_worker")
         self._detach("_hash_worker")
+        self._detach("_cascade_worker")
         self.scan_root = folder
         self.db.set_setting("last_folder", str(folder))
         self._seen = set()
@@ -408,6 +414,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._detach("_worker")
         self._detach("_hash_worker")
+        self._detach("_cascade_worker")
         self.db.close()
         super().closeEvent(event)
 
@@ -481,11 +488,18 @@ class MainWindow(QMainWindow):
             "Si esas carpetas ya existen, las reutiliza."
         )
         self.quality_button.clicked.connect(self._prompt_quality)
+        self.cascade_button = QPushButton("Cascada por calidad")
+        self.cascade_button.setToolTip(
+            "Elige una carpeta base y aplica el agrupamiento 4K/HD/Baja "
+            "en cada subcarpeta, una por una, sin selectores externos."
+        )
+        self.cascade_button.clicked.connect(self._prompt_cascade)
         self.path_label = QLabel("Ninguna carpeta abierta")
         self.path_label.setObjectName("Muted")
         folder_layout.addWidget(self.open_button)
         folder_layout.addWidget(self.rescan_button)
         folder_layout.addWidget(self.quality_button)
+        folder_layout.addWidget(self.cascade_button)
         folder_layout.addWidget(self.path_label)
         self.filters = FilterBar()
         self.filters.changed.connect(self.refresh_view)
@@ -623,10 +637,13 @@ class MainWindow(QMainWindow):
         duplicates.triggered.connect(lambda: self._run(lambda: self.find_duplicates(True)))
         quality = QAction("Agrupar por calidad", self)
         quality.triggered.connect(self._prompt_quality)
+        cascade = QAction("Cascada por calidad…", self)
+        cascade.triggered.connect(self._prompt_cascade)
         ledger = QAction("Registro de errores", self)
         ledger.triggered.connect(self.show_errors)
         tools.addAction(duplicates)
         tools.addAction(quality)
+        tools.addAction(cascade)
         tools.addAction(ledger)
         help_menu = self.menuBar().addMenu("Ayuda")
         about = QAction("Acerca de TagFlow", self)
@@ -728,10 +745,12 @@ class MainWindow(QMainWindow):
 
     def _on_problem(self, path: str, message: str) -> None:
         sender = self.sender()
-        if sender not in {self._worker, self._hash_worker}:
+        if sender not in {self._worker, self._hash_worker, self._cascade_worker}:
             return
         if sender is self._worker:
             self._scan_problems += 1
+        elif sender is self._cascade_worker:
+            self._cascade_problems += 1
         try:
             self.db.log_error(message, path=path or None)
         except Exception:
@@ -980,6 +999,143 @@ class MainWindow(QMainWindow):
         )
         QMessageBox.information(self, "TagFlow", f"Imágenes organizadas:\n\n{lines}")
 
+    def _prompt_cascade(self) -> None:
+        if self.is_busy():
+            QMessageBox.information(self, "TagFlow", "Espera a que termine la operación actual.")
+            return
+        start = self.scan_root or Path.home()
+        dialog = FolderPickerDialog(
+            self,
+            title="Cascada por calidad",
+            start=start,
+            accept_text="Usar esta base",
+            hint=(
+                "Elige la carpeta base. TagFlow aplicará 4K / HD / Baja "
+                "en cada subcarpeta inmediata, una por una. "
+                "Si esas carpetas ya existen, las reutiliza."
+            ),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        base = dialog.selected_folder()
+        try:
+            targets = list_cascade_targets(base)
+        except Exception as exc:
+            QMessageBox.warning(self, "TagFlow", f"No pude leer la carpeta base:\n{exc}")
+            return
+        if not targets:
+            QMessageBox.information(
+                self,
+                "TagFlow",
+                "No hay subcarpetas para procesar en esa base.",
+            )
+            return
+        preview = "\n".join(f"· {path.name}" for path in targets[:12])
+        extra = "" if len(targets) <= 12 else f"\n… y {len(targets) - 12} más"
+        answer = QMessageBox.question(
+            self,
+            "Cascada por calidad",
+            f"Base:\n{base}\n\n"
+            f"Se procesarán {len(targets)} subcarpetas:\n{preview}{extra}\n\n"
+            "Los errores de un archivo o carpeta no detienen el resto.\n\n"
+            "¿Iniciar?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.start_cascade(base, targets)
+
+    def start_cascade(self, base: Path, targets: list[Path] | None = None) -> None:
+        """Lanza la cascada en segundo plano con progreso en la ventana principal."""
+
+        self._ensure_idle()
+        base = base.expanduser().resolve()
+        if not base.is_dir():
+            raise UserError("Elige una carpeta base válida.")
+        selected = targets if targets is not None else list_cascade_targets(base)
+        if not selected:
+            raise UserError("No hay subcarpetas para procesar.")
+        self._detach("_cascade_worker")
+        self._cascade_problems = 0
+        self._last_cascade = None
+        self._set_busy(
+            True,
+            mode="cascade",
+            title="Cascada por calidad",
+            detail=f"Preparando {len(selected)} subcarpetas…",
+        )
+        worker = CascadeQualityWorker(base, selected)
+        self._cascade_worker = worker
+        worker.progress.connect(self._on_cascade_progress)
+        worker.problem.connect(self._on_problem)
+        worker.finished_result.connect(self._on_cascade_finished)
+        worker.start()
+
+    def _on_cascade_progress(
+        self,
+        folder_index: int,
+        folder_total: int,
+        folder_name: str,
+        image_index: int,
+        image_total: int,
+    ) -> None:
+        if self.sender() is not self._cascade_worker:
+            return
+        self.progress.setMaximum(max(folder_total, 1))
+        self.progress.setValue(min(folder_index, folder_total))
+        if image_total > 0:
+            detail = (
+                f"Carpeta {folder_index}/{folder_total}: {folder_name}\n"
+                f"{image_index} de {image_total} imágenes"
+            )
+        else:
+            detail = f"Carpeta {folder_index}/{folder_total}: {folder_name}"
+        self.status_label.setText(f"Cascada {folder_index}/{folder_total}")
+        self.busy_overlay.set_progress(folder_index, folder_total, detail)
+
+    def _on_cascade_finished(self, result: object) -> None:
+        if self.sender() is not self._cascade_worker:
+            return
+        self._set_busy(False)
+        outcome = result if isinstance(result, CascadeResult) else CascadeResult(base=Path("."))
+        self._last_cascade = outcome
+        self._cascade_worker = None
+        if outcome.cancelled:
+            self.status_label.setText("Cascada cancelada")
+        else:
+            self.status_label.setText(
+                f"Cascada lista · {outcome.moved_total} movidas · {outcome.error_total} avisos"
+            )
+        if self.scan_root is not None:
+            try:
+                scan = self.scan_root.resolve()
+                base = outcome.base.resolve()
+                if scan == base or base in scan.parents or scan in base.parents:
+                    self.refresh_view()
+            except OSError:
+                self.refresh_view()
+        if not self._show_dialog:
+            return
+        lines = [
+            f"· {item.folder.name}: {item.moved_total} movidas"
+            + (f", {len(item.errors)} avisos" if item.errors else "")
+            for item in outcome.folders
+            if item.moved_total or item.errors
+        ]
+        if not lines:
+            body = "No había imágenes pendientes en las subcarpetas."
+        else:
+            shown = lines[:16]
+            extra = "" if len(lines) <= 16 else f"\n… y {len(lines) - 16} carpetas más"
+            body = "\n".join(shown) + extra
+        title = "Cascada cancelada" if outcome.cancelled else "Cascada por calidad"
+        QMessageBox.information(
+            self,
+            title,
+            f"Base: {outcome.base}\n"
+            f"Movidas: {outcome.moved_total}\n"
+            f"Avisos: {outcome.error_total}\n\n{body}",
+        )
+
     def _prompt_optimize(self) -> None:
         quality, accepted = QInputDialog.getInt(
             self,
@@ -1135,6 +1291,7 @@ class MainWindow(QMainWindow):
         self.rescan_button.setEnabled(ready)
         self.quality_button.setEnabled(ready)
         self.duplicate_button.setEnabled(ready)
+        self.cascade_button.setEnabled(not self._busy)
 
     def _refresh_error_button(self) -> None:
         count = self.db.count_errors()
